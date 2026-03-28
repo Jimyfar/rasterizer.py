@@ -58,20 +58,27 @@ STATE_RESET    = "reset"    # 重置倒计时
 
 
 # ---------------------------------------------------------------------------
-# 颜色
+# 颜色 — 暗黑地牢主题
 # ---------------------------------------------------------------------------
-SKY_TOP    = (100, 160, 220)
-SKY_BOT    = (200, 230, 255)
-GROUND_COL = (80,  160,  60)
-BEAM_COL   = (90,   55,  20)
-ROPE_COL   = (160,  100,  30)
-SKIN_COL   = (255,  200, 150)
-CLOTH_COL  = (60,   100, 200)
-DARK_COL   = (40,    40,  40)
-WHITE      = (255,  255, 255)
-RED        = (220,   50,  50)
-YELLOW     = (255,  220,   0)
-GREEN      = (50,   220,  80)
+BG_TOP      = (8,    6,   14)   # 顶部近黑
+BG_MID      = (18,  12,   28)   # 中部深紫黑
+BG_BOT      = (10,   8,   18)   # 底部近黑
+STONE_DARK  = (30,  28,   32)
+STONE_MID   = (48,  44,   52)
+STONE_LIGHT = (68,  62,   72)
+IRON_COL    = (55,  55,   60)
+ROPE_DARK   = (60,  38,   18)
+ROPE_MID    = (90,  58,   25)
+ROPE_LIGHT  = (130, 88,   40)
+TORCH_WARM  = (255, 140,  30)
+TORCH_HOT   = (255, 220, 100)
+BLOOD_RED   = (180,  20,  20)
+SPARK_COL   = (255, 180,  40)
+RIM_LIGHT   = (200, 130,  50)   # 火把照出的轮廓光
+WHITE       = (255, 255, 255)
+RED         = (200,  30,  30)
+GREEN       = (40,  200,  80)
+GREY_DIM    = (90,  85,  100)
 
 
 # ---------------------------------------------------------------------------
@@ -168,17 +175,21 @@ class RopeCutGame:
 
     def _reset_state(self):
         self.state           = STATE_HANGING
-        self.swing_angle     = 0.0          # 摆动相位
+        self.swing_angle     = 0.0
         self.char_x          = float(self.ROPE_ATTACH_X)
         self.char_y          = float(self.ROPE_ATTACH_Y + self.ROPE_LENGTH)
         self.char_vx         = 0.0
         self.char_vy         = 0.0
-        self.cut_y           = 0.0          # 剪断位置 y
-        self.cut_flash       = 0            # 特效剩余帧
-        self.reset_timer     = 0            # 重置倒计时帧
-        self.scissors_pos    = None         # (x, y) 游戏坐标
-        self.scissors_active = False        # 当前帧剪刀手势是否检测到
-        self.frays           = []           # 断口毛刺随机偏移列表
+        self.cut_y           = 0.0
+        self.cut_flash       = 0
+        self.reset_timer     = 0
+        self.scissors_pos    = None
+        self.scissors_active = False
+        self.frays           = []
+        # 暗黑风特效
+        self.sparks          = []           # 火花粒子 [(x,y,vx,vy,life,max_life)]
+        self.torch_phase     = 0.0          # 火把闪烁相位
+        self.speed_lines     = []           # 坠落速度线
 
     # ------------------------------------------------------------------
     # 摄像头 & 手势处理
@@ -261,11 +272,23 @@ class RopeCutGame:
         self.char_y  = float(self.ROPE_ATTACH_Y + self.ROPE_LENGTH)
         self.char_vx = swing_vx * 2.5
         self.char_vy = 0.0
-        # 生成断口毛刺
+        # 断口毛刺
         self.frays = [
             (random.randint(-14, 14), random.randint(2, 18))
             for _ in range(8)
         ]
+        # 生成火花粒子
+        cx_spark = self._rope_x_at_y(cut_y)
+        for _ in range(28):
+            angle  = random.uniform(0, math.pi * 2)
+            speed  = random.uniform(1.5, 6.0)
+            life   = random.randint(18, 40)
+            self.sparks.append([
+                cx_spark, cut_y,
+                math.cos(angle) * speed,
+                math.sin(angle) * speed - random.uniform(0, 2),
+                life, life,
+            ])
 
     def update(self):
         if self.state == STATE_HANGING:
@@ -293,227 +316,330 @@ class RopeCutGame:
             if self.reset_timer <= 0:
                 self._reset_state()
 
+        # 火把闪烁 & 火花粒子 (每帧更新)
+        self.torch_phase += 0.08
+        for s in self.sparks:
+            s[0] += s[2]; s[1] += s[3]
+            s[3] += 0.3        # 重力
+            s[2] *= 0.92       # 摩擦
+            s[4] -= 1
+        self.sparks = [s for s in self.sparks if s[4] > 0]
+
     # ------------------------------------------------------------------
     # 渲染
     # ------------------------------------------------------------------
     def _build_bg(self):
+        """预渲染静态暗黑地牢背景"""
         surf = pygame.Surface((self.GAME_W, self.SCREEN_H))
-        draw_gradient_rect(surf, SKY_TOP, SKY_BOT, (0, 0, self.GAME_W, self.SCREEN_H))
-        # 地面
-        pygame.draw.rect(surf, GROUND_COL,
-                         (0, self.SCREEN_H - 65, self.GAME_W, 65))
-        pygame.draw.rect(surf, (60, 130, 40),
-                         (0, self.SCREEN_H - 65, self.GAME_W, 8))
-        # 横梁
-        pygame.draw.rect(surf, BEAM_COL, (0, 0, self.GAME_W, 52))
-        pygame.draw.rect(surf, (110, 70, 25), (0, 48, self.GAME_W, 6))
-        # 竖梁
-        pygame.draw.rect(surf, BEAM_COL,
-                         (self.ROPE_ATTACH_X - 18, 0, 36, 80))
+        # 深暗渐变背景
+        draw_gradient_rect(surf, BG_TOP, BG_MID, (0, 0, self.GAME_W, self.SCREEN_H // 2))
+        draw_gradient_rect(surf, BG_MID, BG_BOT,
+                           (0, self.SCREEN_H // 2, self.GAME_W, self.SCREEN_H // 2))
+
+        # 石砖墙纹理 (横排砖块)
+        bw, bh = 80, 36
+        for row in range(self.SCREEN_H // bh + 1):
+            off = (row % 2) * (bw // 2)
+            for col in range(-1, self.GAME_W // bw + 2):
+                rx = col * bw + off
+                ry = row * bh
+                shade = random.randint(-6, 6)
+                c = tuple(max(0, min(255, v + shade)) for v in STONE_DARK)
+                pygame.draw.rect(surf, c, (rx + 2, ry + 2, bw - 4, bh - 4))
+                pygame.draw.rect(surf, STONE_MID, (rx + 2, ry + 2, bw - 4, bh - 4), 1)
+
+        # 天花板厚石板
+        pygame.draw.rect(surf, STONE_DARK, (0, 0, self.GAME_W, 58))
+        pygame.draw.rect(surf, STONE_MID,  (0, 55, self.GAME_W, 4))
+        # 天花板裂缝
+        for cx in [120, 290, 500, 650]:
+            pygame.draw.line(surf, (15, 12, 18),
+                             (cx, 0), (cx + random.randint(-20, 20), 58), 2)
+
+        # 铁钩 (挂绳子的地方)
+        hx = self.ROPE_ATTACH_X
+        pygame.draw.rect(surf, IRON_COL, (hx - 10, 0, 20, 72))
+        pygame.draw.rect(surf, STONE_LIGHT, (hx - 10, 0, 20, 72), 1)
+        pygame.draw.circle(surf, IRON_COL, (hx, 72), 10)
+        pygame.draw.circle(surf, STONE_LIGHT, (hx, 72), 10, 2)
+
+        # 地面石板
+        pygame.draw.rect(surf, STONE_DARK, (0, self.SCREEN_H - 55, self.GAME_W, 55))
+        pygame.draw.rect(surf, STONE_MID,  (0, self.SCREEN_H - 55, self.GAME_W, 3))
+        for gx in range(0, self.GAME_W, 120):
+            pygame.draw.line(surf, STONE_LIGHT,
+                             (gx, self.SCREEN_H - 55), (gx, self.SCREEN_H), 1)
+
         self._bg_surface = surf
 
-    def _draw_rope(self):
+    def _draw_rope_segment(self, y_start, y_end, n=20):
+        """绘制一段三股麻绳 (暗色+亮色双线营造质感)"""
         pts = []
+        for i in range(n + 1):
+            t = i / n
+            y = lerp(y_start, y_end, t)
+            x = self._rope_x_at_y(y)
+            pts.append((int(x), int(y)))
+        if len(pts) < 2:
+            return
+        # 阴影层
+        pygame.draw.lines(self.screen, ROPE_DARK, False, pts, 9)
+        # 主绳
+        pygame.draw.lines(self.screen, ROPE_MID, False, pts, 6)
+        # 高光 (模拟火把侧光)
+        hi = [(p[0] - 1, p[1]) for p in pts]
+        pygame.draw.lines(self.screen, ROPE_LIGHT, False, hi, 2)
+
+    def _draw_rope(self):
         if self.state == STATE_HANGING:
-            n = 24
-            for i in range(n + 1):
-                t = i / n
-                y = self.ROPE_ATTACH_Y + t * self.ROPE_LENGTH
-                x = self._rope_x_at_y(y)
-                pts.append((int(x), int(y)))
-            pygame.draw.lines(self.screen, ROPE_COL, False, pts, 5)
+            self._draw_rope_segment(self.ROPE_ATTACH_Y, self.ROPE_ATTACH_Y + self.ROPE_LENGTH)
 
         elif self.state in (STATE_CUTTING, STATE_FALLING, STATE_RESET):
-            # 上半段绳子 (仍挂着)
             t_cut = (self.cut_y - self.ROPE_ATTACH_Y) / max(self.ROPE_LENGTH, 1)
             t_cut = max(0.05, min(0.95, t_cut))
-            n = 12
-            pts_top = []
-            for i in range(n + 1):
-                t = i / n * t_cut
-                y = self.ROPE_ATTACH_Y + t * self.ROPE_LENGTH
-                x = self._rope_x_at_y(y)
-                pts_top.append((int(x), int(y)))
-            if len(pts_top) > 1:
-                pygame.draw.lines(self.screen, ROPE_COL, False, pts_top, 5)
+            y_cut = self.ROPE_ATTACH_Y + t_cut * self.ROPE_LENGTH
+            self._draw_rope_segment(self.ROPE_ATTACH_Y, y_cut)
 
-            # 断口毛刺
+            # 断口毛刺 (焦黑纤维)
             cx = int(self._rope_x_at_y(self.cut_y))
             cy = int(self.cut_y)
             for fx, fy in self.frays:
-                pygame.draw.line(self.screen, ROPE_COL,
+                color = ROPE_DARK if abs(fx) > 7 else ROPE_MID
+                pygame.draw.line(self.screen, color,
                                  (cx, cy), (cx + fx, cy + fy), 2)
 
+        # 火花粒子
+        for s in self.sparks:
+            life_ratio = s[4] / s[5]
+            r = int(lerp(180, 255, life_ratio))
+            g = int(lerp(20,  180, life_ratio))
+            b = 0
+            radius = max(1, int(life_ratio * 4))
+            pygame.draw.circle(self.screen, (r, g, b), (int(s[0]), int(s[1])), radius)
+
     def _draw_character(self, x, y, falling=False):
+        """暗黑风人物: 黑色披风剪影 + 火把轮廓光"""
         ix, iy = int(x), int(y)
-        angle = 0.0
-        if falling:
-            # 坠落时身体旋转
-            angle = min(self.char_vy * 3.5, 90)
+        angle  = min(self.char_vy * 4.0, 95) if falling else 0.0
 
-        # --- 绘制到临时 surface 再旋转 ---
-        size = 160
-        tmp = pygame.Surface((size, size), pygame.SRCALPHA)
-        cx, cy_base = size // 2, size // 2 - 20
+        size = 200
+        tmp  = pygame.Surface((size, size), pygame.SRCALPHA)
+        cx   = size // 2
+        # 头部中心 y (挂绳时双手举过头顶)
+        head_y = 52
 
-        # 身体
-        pygame.draw.line(tmp, DARK_COL,
-                         (cx, cy_base + 22), (cx, cy_base + 75), 5)
-        # 衣服
-        pygame.draw.polygon(tmp, CLOTH_COL, [
-            (cx - 14, cy_base + 28),
-            (cx + 14, cy_base + 28),
-            (cx + 16, cy_base + 65),
-            (cx - 16, cy_base + 65),
-        ])
-        # 手臂
-        arm_swing = math.sin(self.swing_angle * 2) * 12 if not falling else 35
-        pygame.draw.line(tmp, SKIN_COL,
-                         (cx, cy_base + 35),
-                         (cx - 38, cy_base + 50 + int(arm_swing)), 5)
-        pygame.draw.line(tmp, SKIN_COL,
-                         (cx, cy_base + 35),
-                         (cx + 38, cy_base + 50 - int(arm_swing)), 5)
-        # 腿
-        leg_swing = math.sin(self.swing_angle * 2) * 10 if not falling else 25
-        pygame.draw.line(tmp, CLOTH_COL,
-                         (cx, cy_base + 75),
-                         (cx - 22, cy_base + 120 + int(leg_swing)), 6)
-        pygame.draw.line(tmp, CLOTH_COL,
-                         (cx, cy_base + 75),
-                         (cx + 22, cy_base + 120 - int(leg_swing)), 6)
-        # 头
-        pygame.draw.circle(tmp, SKIN_COL, (cx, cy_base), 22)
-        # 眼睛
+        # ------ 双手绑在绳子上 ------
+        if not falling:
+            # 左右手腕绑绳处
+            pygame.draw.line(tmp, (80, 55, 25), (cx - 10, head_y - 28),
+                             (cx + 10, head_y - 28), 5)  # 绳结
+            pygame.draw.line(tmp, (60, 40, 15), (cx, head_y - 35), (cx, head_y - 28), 4)
+
+        # ------ 披风/斗篷 (大三角形剪影) ------
+        cloak_top  = head_y + 18
+        cloak_bot  = head_y + 140
+        cloak_pts  = [
+            (cx,      cloak_top),
+            (cx - 42, cloak_bot - 20),
+            (cx - 30, cloak_bot),
+            (cx,      cloak_bot - 15),
+            (cx + 30, cloak_bot),
+            (cx + 42, cloak_bot - 20),
+        ]
+        pygame.draw.polygon(tmp, (18, 14, 22), cloak_pts)        # 黑色主体
+        # 披风边缘轮廓光
+        pygame.draw.lines(tmp, RIM_LIGHT, False,
+                          [(cx - 42, cloak_bot - 20),
+                           (cx,      cloak_top),
+                           (cx + 42, cloak_bot - 20)], 2)
+
+        # ------ 腿 ------
+        leg_a = math.sin(self.swing_angle * 2) * 8 if not falling else 28
+        pygame.draw.line(tmp, (25, 20, 30),
+                         (cx - 8, cloak_bot - 20),
+                         (cx - 18, cloak_bot + 35 + int(leg_a)), 7)
+        pygame.draw.line(tmp, (25, 20, 30),
+                         (cx + 8, cloak_bot - 20),
+                         (cx + 18, cloak_bot + 35 - int(leg_a)), 7)
+        # 腿部轮廓光
+        pygame.draw.line(tmp, RIM_LIGHT,
+                         (cx - 8, cloak_bot - 20),
+                         (cx - 18, cloak_bot + 35 + int(leg_a)), 1)
+
+        # ------ 头部 ------
+        # 头骨阴影 (球体)
+        pygame.draw.circle(tmp, (22, 18, 26), (cx, head_y), 26)
+        # 轮廓光
+        pygame.draw.circle(tmp, RIM_LIGHT, (cx, head_y), 26, 2)
+        # 兜帽遮住大半张脸
+        hood_pts = [
+            (cx - 26, head_y - 4),
+            (cx - 20, head_y - 26),
+            (cx,      head_y - 32),
+            (cx + 20, head_y - 26),
+            (cx + 26, head_y - 4),
+            (cx + 20, head_y + 10),
+            (cx,      head_y + 14),
+            (cx - 20, head_y + 10),
+        ]
+        pygame.draw.polygon(tmp, (18, 14, 22), hood_pts)
+
+        # 眼睛 — 坠落时睁大, 悬挂时暗红光点
         if falling:
-            # 惊讶表情
-            pygame.draw.circle(tmp, DARK_COL, (cx - 8, cy_base - 2), 5)
-            pygame.draw.circle(tmp, DARK_COL, (cx + 8, cy_base - 2), 5)
-            pygame.draw.arc(tmp, DARK_COL,
-                            pygame.Rect(cx - 8, cy_base + 6, 16, 10),
-                            0, math.pi, 2)
+            pygame.draw.circle(tmp, (220, 40, 40), (cx - 9, head_y), 6)
+            pygame.draw.circle(tmp, (220, 40, 40), (cx + 9, head_y), 6)
+            pygame.draw.circle(tmp, (255, 120, 80), (cx - 9, head_y), 3)
+            pygame.draw.circle(tmp, (255, 120, 80), (cx + 9, head_y), 3)
         else:
-            pygame.draw.circle(tmp, DARK_COL, (cx - 7, cy_base - 3), 4)
-            pygame.draw.circle(tmp, DARK_COL, (cx + 7, cy_base - 3), 4)
-            pygame.draw.arc(tmp, DARK_COL,
-                            pygame.Rect(cx - 7, cy_base + 5, 14, 8),
-                            math.pi, 2 * math.pi, 2)
-        # 头发
-        pygame.draw.arc(tmp, DARK_COL,
-                        pygame.Rect(cx - 22, cy_base - 22, 44, 44),
-                        0, math.pi, 5)
+            pygame.draw.circle(tmp, (140, 20, 20), (cx - 8, head_y + 2), 4)
+            pygame.draw.circle(tmp, (140, 20, 20), (cx + 8, head_y + 2), 4)
 
         # 旋转并贴图
         rotated = pygame.transform.rotate(tmp, -angle)
-        rw, rh = rotated.get_size()
-        self.screen.blit(rotated, (ix - rw // 2, iy - 20 - rh // 4))
+        rw, rh  = rotated.get_size()
+        self.screen.blit(rotated, (ix - rw // 2, iy - head_y - rh // 4 + 10))
 
     def _draw_scissors_cursor(self):
         if not self.scissors_active or not self.scissors_pos:
             return
-        sx, sy = int(self.scissors_pos[0]), int(self.scissors_pos[1])
-        on_rope = self._scissors_near_rope()
-        color   = RED if on_rope else YELLOW
-        alpha   = 200 if on_rope else 140
+        sx, sy   = int(self.scissors_pos[0]), int(self.scissors_pos[1])
+        on_rope  = self._scissors_near_rope()
+        color    = (220, 30, 30) if on_rope else (180, 100, 20)
+        alpha    = 230 if on_rope else 160
 
-        # 准星
-        surf = pygame.Surface((80, 80), pygame.SRCALPHA)
-        cx, cy = 40, 40
-        pygame.draw.line(surf, (*color, alpha), (cx - 28, cy), (cx + 28, cy), 3)
-        pygame.draw.line(surf, (*color, alpha), (cx, cy - 28), (cx, cy + 28), 3)
-        pygame.draw.circle(surf, (*color, alpha // 2), (cx, cy), 26, 2)
-        # 剪刀图标 (简化)
-        pygame.draw.line(surf, (*color, alpha), (cx - 8, cy - 8), (cx + 10, cy + 10), 3)
-        pygame.draw.line(surf, (*color, alpha), (cx + 8, cy - 8), (cx - 10, cy + 10), 3)
-        self.screen.blit(surf, (sx - 40, sy - 40))
+        surf = pygame.Surface((90, 90), pygame.SRCALPHA)
+        c, r = 45, 45
+        # 外圆
+        pygame.draw.circle(surf, (*color, alpha // 2), (c, r), 34, 1)
+        # 准星四线
+        for dx, dy in [(-38, 0), (38, 0), (0, -38), (0, 38)]:
+            pygame.draw.line(surf, (*color, alpha),
+                             (c + dx // 3, r + dy // 3),
+                             (c + dx, r + dy), 2)
+        # X 标记 (剪刀刃)
+        pygame.draw.line(surf, (*color, alpha), (c - 10, r - 10), (c + 10, r + 10), 3)
+        pygame.draw.line(surf, (*color, alpha), (c + 10, r - 10), (c - 10, r + 10), 3)
+        self.screen.blit(surf, (sx - c, sy - r))
 
         if on_rope:
-            label = self.font_tip.render("对准绳子! 剪!",  True, RED)
-            self.screen.blit(label, (sx + 30, sy - 12))
+            lbl = self.font_tip.render("⚡ 剪断!", True, (255, 80, 80))
+            self.screen.blit(lbl, (sx + 38, sy - 14))
 
     def _draw_cut_effect(self):
         if self.state != STATE_CUTTING:
             return
-        t = self.cut_flash / self.CUT_FLASH_FRAMES
-        alpha = int(t * 180)
+        t     = self.cut_flash / self.CUT_FLASH_FRAMES
+        alpha = int(t * 140)
+        # 血红闪光
         flash = pygame.Surface((self.GAME_W, self.SCREEN_H), pygame.SRCALPHA)
-        flash.fill((255, 240, 0, alpha))
+        flash.fill((180, 10, 10, alpha))
         self.screen.blit(flash, (0, 0))
-
-        size = int(lerp(30, 90, 1 - t))
-        text = self.font_lg.render("✂ 咔嚓!", True,
-                                   (int(lerp(220, 255, t)),
-                                    int(lerp(50, 200, t)), 0))
-        self.screen.blit(text,
-                         (self.GAME_W // 2 - text.get_width() // 2,
-                          self.SCREEN_H // 2 - text.get_height() // 2 - size))
+        # 文字
+        text = self.font_lg.render("SNAP", True,
+                                   (255, int(lerp(20, 100, 1 - t)), 20))
+        scale = lerp(0.6, 1.3, 1 - t)
+        w, h  = text.get_size()
+        scaled = pygame.transform.scale(text, (int(w * scale), int(h * scale)))
+        self.screen.blit(scaled,
+                         (self.GAME_W // 2 - scaled.get_width() // 2,
+                          self.SCREEN_H // 2 - scaled.get_height() // 2))
 
     def _draw_falling_scream(self):
         if self.state not in (STATE_FALLING, STATE_RESET):
             return
-        scream = self.font_md.render("啊啊啊——!!!", True, RED)
+        # 速度线
+        speed = min(abs(self.char_vy), 20)
+        for _ in range(int(speed * 2)):
+            lx = random.randint(0, self.GAME_W)
+            ly = random.randint(0, self.SCREEN_H)
+            length = random.randint(10, int(speed * 5))
+            alpha  = random.randint(30, 100)
+            ls = pygame.Surface((3, length), pygame.SRCALPHA)
+            ls.fill((180, 80, 20, alpha))
+            self.screen.blit(ls, (lx, ly))
+        # 尖叫文字
+        scream = self.font_md.render("AAAAAAH——", True, (200, 30, 30))
         self.screen.blit(scream,
-                         (self.GAME_W // 2 - scream.get_width() // 2, 80))
+                         (self.GAME_W // 2 - scream.get_width() // 2, 75))
+
+    def _draw_vignette(self):
+        """四角晕影 — 暗黑氛围感"""
+        v = pygame.Surface((self.GAME_W, self.SCREEN_H), pygame.SRCALPHA)
+        for r in range(0, 200, 8):
+            alpha = int((r / 200) ** 2 * 160)
+            pygame.draw.rect(v, (0, 0, 0, alpha),
+                             (r, r, self.GAME_W - r * 2, self.SCREEN_H - r * 2), 8)
+        self.screen.blit(v, (0, 0))
+
+    def _draw_torch_glow(self):
+        """火把光晕 — 从下方暖光照射"""
+        flicker = math.sin(self.torch_phase) * 0.12 + math.sin(self.torch_phase * 2.7) * 0.06
+        base_alpha = int((0.22 + flicker) * 255)
+        radius = 320
+        glow = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        for r in range(radius, 0, -12):
+            a = int(base_alpha * (1 - r / radius) ** 1.6)
+            a = max(0, min(255, a))
+            pygame.draw.circle(glow, (255, 140, 30, a), (radius, radius), r)
+        gx = self.ROPE_ATTACH_X - radius
+        gy = self.ROPE_ATTACH_Y + self.ROPE_LENGTH - radius + 80
+        self.screen.blit(glow, (gx, gy), special_flags=pygame.BLEND_RGBA_ADD)
 
     def _draw_hint(self):
         if self.state == STATE_HANGING:
-            hint = self.font_sm.render(
-                "对摄像头做✌ 手势  对准绳子即可剪断  |  空格=手动触发  R=重置",
-                True, (50, 50, 80))
-            self.screen.blit(hint, (12, self.SCREEN_H - 44))
-
+            hint = self.font_tip.render(
+                "✌ scissors gesture → aim at rope  |  SPACE=test  R=reset",
+                True, GREY_DIM)
+            self.screen.blit(hint, (12, self.SCREEN_H - 36))
         elif self.state == STATE_RESET:
-            msg = self.font_md.render("即将重置...", True, (80, 80, 80))
+            msg = self.font_md.render("Resetting...", True, GREY_DIM)
             self.screen.blit(msg,
                              (self.GAME_W // 2 - msg.get_width() // 2,
                               self.SCREEN_H // 2))
 
     def _draw_camera_panel(self, frame):
-        """在右侧绘制摄像头画面"""
         panel_x = self.GAME_W
         panel_w = self.CAM_W
         panel_h = self.SCREEN_H
 
-        # 背景
-        pygame.draw.rect(self.screen, (20, 20, 30),
-                         (panel_x, 0, panel_w, panel_h))
+        # 暗色背景
+        pygame.draw.rect(self.screen, (10, 8, 14), (panel_x, 0, panel_w, panel_h))
 
         if frame is not None:
-            # 缩放到合适尺寸
-            target_w = panel_w - 20
+            target_w = panel_w - 24
             target_h = int(target_w * frame.shape[0] / frame.shape[1])
             cam_resized = cv2.resize(frame, (target_w, target_h))
-            cam_rgb = cv2.cvtColor(cam_resized, cv2.COLOR_BGR2RGB)
-            cam_surf = pygame.surfarray.make_surface(
+            cam_rgb     = cv2.cvtColor(cam_resized, cv2.COLOR_BGR2RGB)
+            cam_surf    = pygame.surfarray.make_surface(
                 np.transpose(cam_rgb, (1, 0, 2))
             )
             y_off = (panel_h - target_h) // 2
-            self.screen.blit(cam_surf, (panel_x + 10, y_off))
-            pygame.draw.rect(self.screen, WHITE,
-                             (panel_x + 10, y_off, target_w, target_h), 2)
+            self.screen.blit(cam_surf, (panel_x + 12, y_off))
+            # 铁框边框
+            pygame.draw.rect(self.screen, STONE_MID,
+                             (panel_x + 12, y_off, target_w, target_h), 1)
+            pygame.draw.rect(self.screen, IRON_COL,
+                             (panel_x + 10, y_off - 2, target_w + 4, target_h + 4), 2)
 
         # 状态标签
         if self.scissors_active:
-            status_text = self.font_sm.render("✂  剪刀手势 检测到!", True, GREEN)
+            st = self.font_sm.render("✂  DETECTED", True, (220, 80, 80))
         else:
-            status_text = self.font_sm.render("请做✌ 剪刀手势", True, (180, 180, 180))
-        self.screen.blit(status_text,
-                         (panel_x + panel_w // 2 - status_text.get_width() // 2,
-                          panel_h - 42))
+            st = self.font_tip.render("show ✌  scissors gesture", True, GREY_DIM)
+        self.screen.blit(st, (panel_x + panel_w // 2 - st.get_width() // 2, panel_h - 38))
 
-        # 分隔线
-        pygame.draw.line(self.screen, (80, 80, 80),
-                         (panel_x, 0), (panel_x, panel_h), 2)
-
-        # 标题
-        title = self.font_tip.render("摄像头  Camera", True, (150, 150, 170))
-        self.screen.blit(title, (panel_x + panel_w // 2 - title.get_width() // 2, 8))
+        # 分隔线 (石墙缝)
+        pygame.draw.line(self.screen, STONE_MID, (panel_x, 0), (panel_x, panel_h), 3)
+        pygame.draw.line(self.screen, (5, 4, 8),  (panel_x + 1, 0), (panel_x + 1, panel_h), 1)
 
     def draw(self, frame):
-        # 背景
+        # 背景 (石砖地牢)
         if self._bg_surface is None:
             self._build_bg()
         self.screen.blit(self._bg_surface, (0, 0))
+
+        # 火把暖光晕 (在角色和绳子之下)
+        self._draw_torch_glow()
 
         # 绳子
         self._draw_rope()
@@ -528,7 +654,10 @@ class RopeCutGame:
             cx, cy = self.char_x, self.char_y
         self._draw_character(cx, cy, falling=falling)
 
-        # 剪刀位置指示
+        # 四角晕影
+        self._draw_vignette()
+
+        # 剪刀准星
         self._draw_scissors_cursor()
 
         # 特效层
