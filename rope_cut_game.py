@@ -16,14 +16,36 @@
     - ESC:    退出
 """
 
+import os
 import sys
 import math
 import random
+import time
+import urllib.request
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 import pygame
+
+# ---------------------------------------------------------------------------
+# 首次运行自动下载 MediaPipe 手部检测模型 (~10 MB)
+# ---------------------------------------------------------------------------
+_MODEL_PATH = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
+_MODEL_URL  = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
+)
+
+def _ensure_model():
+    if not os.path.exists(_MODEL_PATH):
+        print("首次运行：正在下载手部检测模型 (~10 MB)...")
+        urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
+        print("模型下载完成！")
+
+_ensure_model()
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +126,19 @@ class RopeCutGame:
         # 字体
         self._init_fonts()
 
-        # 摄像头 + MediaPipe
+        # 摄像头 + MediaPipe Tasks API
         self.cap = cv2.VideoCapture(0)
-        mp_hands = mp.solutions.hands
-        self.hands = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.75,
+        base_opts = mp_python.BaseOptions(model_asset_path=_MODEL_PATH)
+        opts = mp_vision.HandLandmarkerOptions(
+            base_options=base_opts,
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_hands=1,
+            min_hand_detection_confidence=0.75,
+            min_hand_presence_confidence=0.6,
             min_tracking_confidence=0.6,
         )
+        self.hand_landmarker = mp_vision.HandLandmarker.create_from_options(opts)
+        self._frame_ts = 0  # 递增时间戳 (毫秒)
 
         # 游戏状态
         self._reset_state()
@@ -164,13 +190,17 @@ class RopeCutGame:
 
         frame = cv2.flip(frame, 1)          # 镜像, 让用户看起来自然
         rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        res   = self.hands.process(rgb)
+
+        # Tasks API 需要递增时间戳
+        self._frame_ts += 33
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        res = self.hand_landmarker.detect_for_video(mp_image, self._frame_ts)
 
         self.scissors_active = False
         self.scissors_pos    = None
 
-        if res.multi_hand_landmarks:
-            lm = res.multi_hand_landmarks[0].landmark
+        if res.hand_landmarks:
+            lm = res.hand_landmarks[0]      # list of NormalizedLandmark
             if self._is_scissors(lm):
                 self.scissors_active = True
                 self.scissors_pos    = self._hand_to_game_pos(lm)
@@ -539,7 +569,7 @@ class RopeCutGame:
 
     def _cleanup(self):
         self.cap.release()
-        self.hands.close()
+        self.hand_landmarker.close()
         pygame.quit()
         sys.exit()
 
